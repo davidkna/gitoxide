@@ -54,8 +54,9 @@ mod impl_ {
                 Foundation::{HANDLE, PSID},
                 Security::{
                     Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT},
-                    EqualSid, GetTokenInformation, TokenOwner, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-                    TOKEN_OWNER, TOKEN_QUERY,
+                    CheckTokenMembership, EqualSid, GetTokenInformation, IsWellKnownSid, TokenOwner,
+                    WinBuiltinAdministratorsSid, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+                    PSECURITY_DESCRIPTOR, TOKEN_OWNER, TOKEN_QUERY,
                 },
                 System::{
                     Memory::LocalFree,
@@ -75,7 +76,7 @@ mod impl_ {
             let result = GetNamedSecurityInfoW(
                 PCWSTR(to_wide_path(path).as_ptr()),
                 SE_FILE_OBJECT,
-                OWNER_SECURITY_INFORMATION,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
                 &mut folder_owner,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
@@ -106,6 +107,15 @@ mod impl_ {
                         let token_owner = (*token_owner).Owner;
 
                         is_owned = EqualSid(folder_owner, token_owner).as_bool();
+
+                        // Admin-group owned folders are considered owned by the current user, if they are in the admin group
+                        if !is_owned && IsWellKnownSid(token_owner, WinBuiltinAdministratorsSid).as_bool() {
+                            let mut is_member = Default::default();
+                            match CheckTokenMembership(token, token_owner, &mut is_member).ok() {
+                                Err(e) => err_msg = Some(format!("Couldn't check if user is an administrator: {}", e)),
+                                Ok(()) => is_owned = is_member.as_bool(),
+                            }
+                        }
                     } else {
                         err_msg = format!(
                             "Couldn't get actual token information for current process with err: {}",
